@@ -43,6 +43,60 @@ namespace CelesteAndroid
 		public static bool IsInstalled(Context context) =>
 			File.Exists(PatchedDll(context)) && Directory.Exists(Path.Combine(GameDir(context), "Content"));
 
+		/// <summary>
+		/// Versão do patcher embutida neste APK. Muda sempre que os módulos MonoMod
+		/// (Everest, patches do Android) ou o CelestePatcher mudam.
+		///
+		/// Serve para reaplicar o patch numa atualização do APK sem reimportar o jogo:
+		/// o Celeste.dll antigo continua válido como arquivo, mas sem os tipos novos
+		/// (ex.: instalar o Everest por cima de um Celeste.dll sem Everest não faz nada).
+		/// </summary>
+		public const string PatcherRevision = "everest-1";
+
+		private static string PatcherStamp(Context context) =>
+			Path.Combine(Path.GetDirectoryName(PatchedDll(context))!, ".patcher-revision");
+
+		/// <summary>
+		/// true quando o jogo está importado mas o Celeste.dll foi gerado por uma
+		/// revisão diferente do patcher — precisa rodar Patch() de novo.
+		/// </summary>
+		public static bool NeedsRepatch(Context context)
+		{
+			if (!IsInstalled(context))
+				return false;
+			try
+			{
+				string stamp = PatcherStamp(context);
+				if (!File.Exists(stamp))
+					return true;
+				return File.ReadAllText(stamp).Trim() != PatcherRevision;
+			}
+			catch
+			{
+				return true;
+			}
+		}
+
+		/// <summary>
+		/// Regera só o Celeste.dll (e o fundo), sem tocar no jogo importado.
+		/// Usado quando NeedsRepatch() é true numa atualização do APK.
+		/// </summary>
+		public void Repatch()
+		{
+			Patch();
+			try
+			{
+				string stamp = PatcherStamp(context);
+				Directory.CreateDirectory(Path.GetDirectoryName(stamp)!);
+				File.WriteAllText(stamp, PatcherRevision);
+				Log.Info(GameActivity.LogTag, "patcher revisão gravada: " + PatcherRevision);
+			}
+			catch (Exception e)
+			{
+				Log.Warn(GameActivity.LogTag, "gravar revisão do patcher falhou: " + e.Message);
+			}
+		}
+
 		/// <summary>APK pessoal: o jogo vem nos assets (build com -p:EmbedGame=true).</summary>
 		public static bool HasEmbeddedGame(Context context) =>
 			context.Assets!.List(GameAssetsRoot)?.Contains("Celeste.exe") == true;
@@ -199,11 +253,27 @@ namespace CelesteAndroid
 				input.CopyTo(output);
 			}
 
+			// A ordem importa: o Everest precisa entrar primeiro, porque ele reescreve
+			// o ponto de entrada e injeta Celeste.Mod.*; os patches do Android vêm depois
+			// para poderem enxergar os tipos que o Everest acabou de criar.
+			// Verificado: inverter a ordem quebra o AutoPatch (KeyNotFoundException no ILCursor).
+			var mods = new List<string>();
+			foreach (string name in PatcherModOrder)
+			{
+				string path = Path.Combine(patcherDir, name);
+				if (File.Exists(path))
+					mods.Add(path);
+				else
+					Log.Warn(GameActivity.LogTag, "patcher ausente, ignorando: " + name);
+			}
+			if (mods.Count == 0)
+				throw new InstallException("Nenhum módulo de patch encontrado em assets/patcher.");
+
 			string patched = PatchedDll(context);
 			string staging = patched + ".tmp";
 			CelestePatcher.Patch(
 				Path.Combine(GameDir(context), "Celeste.exe"),
-				Path.Combine(patcherDir, "Celeste.Android.mm.dll"),
+				mods,
 				staging,
 				new[] { patcherDir },
 				msg => Log.Info(GameActivity.LogTag, msg)
@@ -212,6 +282,34 @@ namespace CelesteAndroid
 			// O MonoMod também grava símbolos de depuração (.mdb) que não usamos.
 			foreach (string leftover in Directory.GetFiles(Path.GetDirectoryName(patched)!, "*.mdb"))
 				File.Delete(leftover);
+
+			// Marca a revisão para não repatchar a cada abertura.
+			WritePatcherStamp();
+		}
+
+		/// <summary>
+		/// Módulos MonoMod aplicados em sequência, nesta ordem.
+		/// Celeste.Mod.mm.dll é o próprio Everest (loader de mods);
+		/// Celeste.Android.mm.dll já contém os patches Android + adaptações do Everest.
+		/// </summary>
+		private static readonly string[] PatcherModOrder =
+		{
+			"Celeste.Mod.mm.dll",
+			"Celeste.Android.mm.dll",
+		};
+
+		private void WritePatcherStamp()
+		{
+			try
+			{
+				string stamp = PatcherStamp(context);
+				Directory.CreateDirectory(Path.GetDirectoryName(stamp)!);
+				File.WriteAllText(stamp, PatcherRevision);
+			}
+			catch (Exception e)
+			{
+				Log.Warn(GameActivity.LogTag, "gravar revisão do patcher falhou: " + e.Message);
+			}
 		}
 
 		/// <summary>Versão desfocada e escurecida da key art do jogo, para as faixas laterais.</summary>

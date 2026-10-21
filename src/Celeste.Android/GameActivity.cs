@@ -38,12 +38,28 @@ namespace CelesteAndroid
 		{
 			base.OnCreate(savedInstanceState);
 			// O FMOD no Android precisa do Context para o áudio e para ler arquivos.
-			Org.Fmod.FMOD.Init(this);
+			// Chamado por reflexão: as classes org.fmod.* vêm do classes.dex do APK base,
+			// não do binding do jar (o Javac do SDK não roda em host ARM).
+			FmodBridge.Init(this);
+		}
+
+		// 游戏切后台时双向同步一次：外部模式 Download → 内部影子，内部模式 内部 → Download。
+		protected override void OnPause()
+		{
+			try
+			{
+				SaveLocation.OnGamePause(this);
+			}
+			catch (Exception e)
+			{
+				Log.Warn(LogTag, "暂停同步失败: " + e.Message);
+			}
+			base.OnPause();
 		}
 
 		protected override void OnDestroy()
 		{
-			Org.Fmod.FMOD.Close();
+			FmodBridge.Close();
 			base.OnDestroy();
 			if (IsFinishing)
 				Process.KillProcess(Process.MyPid());

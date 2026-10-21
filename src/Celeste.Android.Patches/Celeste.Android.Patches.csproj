@@ -5,6 +5,10 @@
 		<AssemblyName>Celeste.Android.mm</AssemblyName>
 		<RootNamespace>CelesteAndroid</RootNamespace>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<!-- Pack de referência do Android, instalado junto com o workload.
+		     SaveRedirect usa Android.OS.Environment; em runtime a API existe porque
+		     o patch roda dentro do processo Android. Aqui só precisamos compilar. -->
+		<MonoAndroidRefDir>$(MSBuildSDKsPath)/../../packs/Microsoft.Android.Ref.36/36.1.2/ref/net10.0/</MonoAndroidRefDir>
 	</PropertyGroup>
 	<ItemGroup>
 		<PackageReference Include="MonoMod.Patcher" Version="25.0.1" PrivateAssets="all" ExcludeAssets="runtime" />
@@ -15,5 +19,9 @@
 			<Private>false</Private>
 		</Reference>
 		<ProjectReference Include="..\..\external\FNA\FNA.Core.csproj" Private="false" />
+		<Reference Include="Mono.Android" Condition="Exists('$(MonoAndroidRefDir)Mono.Android.dll')">
+			<HintPath>$(MonoAndroidRefDir)Mono.Android.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
 	</ItemGroup>
 </Project>

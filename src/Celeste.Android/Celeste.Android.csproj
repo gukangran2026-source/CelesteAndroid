@@ -42,7 +42,10 @@
 		<AndroidNativeLibrary Include="$(RepoRoot)natives\android-arm64\*.so" Abi="arm64-v8a" />
 		<!-- FMOD 1.10.14 (mesma versão dos .bank do jogo). Proprietário: fica fora do git. -->
 		<AndroidNativeLibrary Include="$(RepoRoot)fmod\libs\android-arm64\*.so" Abi="arm64-v8a" />
-		<AndroidLibrary Include="$(RepoRoot)fmod\libs\android-arm64\fmod.jar" Bind="true" />
+		<!-- Bind=false: o Javac do SDK só roda em host x64 (libZipSharpNative é x86-64),
+		     e este build roda em ARM. As classes org.fmod.* já vêm compiladas no
+		     classes.dex do APK base; GameActivity chama FMOD por JNI (FmodBridge). -->
+		<AndroidLibrary Include="$(RepoRoot)fmod\libs\android-arm64\fmod.jar" Bind="false" />
 	</ItemGroup>
 	<ItemGroup Condition="'$(HasGameIcon)' == 'true'">
 		<AndroidResource Include="$(GameArtDir)icon\res\**\*" Link="Resources\%(RecursiveDir)%(Filename)%(Extension)" />
@@ -70,7 +73,8 @@
 		<ProjectReference Include="..\..\external\FNA\FNA.Core.csproj" />
 		<ProjectReference Include="..\Steamworks.NET\Steamworks.NET.csproj" />
 		<ProjectReference Include="..\Celeste.Patcher\Celeste.Patcher.csproj" />
-		<!-- Só para compilar antes; o .dll vai como asset (ver _AddPatcherAssets). -->
+		<!-- Só para compilar antes; o .dll vai como asset (ver _AddPatcherAssets).
+		     Este módulo já traz os patches Android e as adaptações do Everest. -->
 		<ProjectReference Include="..\Celeste.Android.Patches\Celeste.Android.Patches.csproj"
 			ReferenceOutputAssembly="false" OutputItemType="CelestePatchModule" />
 	</ItemGroup>
@@ -82,6 +86,8 @@
 			<AndroidAsset Include="@(CelestePatchModule)" LogicalName="patcher/%(Filename)%(Extension)" />
 			<AndroidAsset Include="@(ReferencePath)" Condition="'%(Filename)' == 'FNA' or '%(Filename)' == 'Steamworks.NET' or '%(Filename)' == 'MonoMod.Patcher'"
 				LogicalName="patcher/%(Filename)%(Extension)" />
+			<!-- Runtime do Everest: o Celeste.dll mesclado referencia todos estes em tempo de execução. -->
+			<AndroidAsset Include="$(EverestLibDir)**\*.dll" LogicalName="patcher/%(Filename)%(Extension)" />
 		</ItemGroup>
 	</Target>
 </Project>

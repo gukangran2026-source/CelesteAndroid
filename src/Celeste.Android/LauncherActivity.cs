@@ -34,7 +34,9 @@ namespace CelesteAndroid
 		private const int RequestFolder = 1;
 		private const int RequestZip = 2;
 		private const int RequestSaves = 3;
+		private const int RequestExport = 4;
 		private const string PrefDriver = "driver";
+		private const string PrefAskedSave = "asked_save_access";
 
 		private static readonly Color Night = Color.ParseColor("#120C22");
 		private static readonly Color Accent = Color.ParseColor("#F2B8D8");
@@ -46,6 +48,9 @@ namespace CelesteAndroid
 		private Button openFolder = null!;
 		private TextView openZip = null!;
 		private TextView importSaves = null!;
+		private TextView exportSaves = null!;
+		private TextView saveFolderLink = null!;
+		private TextView migrateSaves = null!;
 		private TextView driverToggle = null!;
 		private LinearLayout links = null!;
 		private LinearLayout progressBox = null!;
@@ -83,6 +88,7 @@ namespace CelesteAndroid
 			base.OnResume();
 			HideSystemBars();
 			RefreshState();
+			EnsureSavePermission();
 
 			// Desenvolvimento: arquivos já copiados por scripts/deploy-android.ps1; só patch + fundo.
 			// adb shell am start -n org.celesteandroid.celeste/.LauncherActivity --ez repatch true
@@ -95,6 +101,18 @@ namespace CelesteAndroid
 			else if (!busy && !GameInstaller.IsInstalled(this) && GameInstaller.HasEmbeddedGame(this))
 			{
 				RunInstall(installer => installer.ImportEmbedded());
+			}
+			// Atualização do APK com jogo já importado: o Celeste.dll em disco foi gerado
+			// por outra revisão do patcher. Regera só ele — não reimporta os 1.1 GB.
+			else if (!busy && GameInstaller.NeedsRepatch(this))
+			{
+				Log.Info(GameActivity.LogTag, "patcher desatualizado, regerando Celeste.dll");
+				RunJob(installer =>
+				{
+					installer.Repatch();
+					RunOnUiThread(LoadArt);
+					return "✓  Celeste.dll atualizado";
+				});
 			}
 		}
 
@@ -170,6 +188,26 @@ namespace CelesteAndroid
 			links.AddView(Text("·", 14, Color.Argb(120, 255, 255, 255), TypefaceStyle.Normal), Margins(left: 10, right: 10));
 			links.AddView(driverToggle);
 			panel.AddView(links, Margins(top: 6, left: 6));
+
+			// 存档链接单独一行，避免横向溢出。
+			var saveLinks = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+			exportSaves = LinkText("Export saves");
+			exportSaves.Click += (_, _) =>
+				StartActivityForResult(new Intent(Intent.ActionOpenDocumentTree), RequestExport);
+			saveFolderLink = LinkText("Save folder");
+			saveFolderLink.Click += (_, _) => ShowSaveFolder();
+			migrateSaves = LinkText("Move old saves");
+			migrateSaves.Click += (_, _) => RunJob(_ =>
+			{
+				int n = SaveLocation.ForceMigrate(this);
+				return n > 0 ? $"✓  Moved {n} save file(s) to Download/Celeste" : "Nothing to move";
+			});
+			saveLinks.AddView(exportSaves);
+			saveLinks.AddView(Text("·", 14, Color.Argb(120, 255, 255, 255), TypefaceStyle.Normal), Margins(left: 10, right: 10));
+			saveLinks.AddView(saveFolderLink);
+			saveLinks.AddView(Text("·", 14, Color.Argb(120, 255, 255, 255), TypefaceStyle.Normal), Margins(left: 10, right: 10));
+			saveLinks.AddView(migrateSaves);
+			panel.AddView(saveLinks, Margins(left: 6));
 
 			progressBox = new LinearLayout(this) { Orientation = Orientation.Vertical, Visibility = ViewStates.Gone };
 			progressBar = new ProgressBar(this, null, Android.Resource.Attribute.ProgressBarStyleHorizontal) { Max = 1000 };
@@ -283,11 +321,16 @@ namespace CelesteAndroid
 			importSaves.Enabled = !busy;
 			// A tela é baixa (~360dp): durante a instalação a barra de progresso ocupa o lugar dos links.
 			links.Visibility = busy ? ViewStates.Gone : ViewStates.Visible;
+			exportSaves.Enabled = !busy;
+			saveFolderLink.Enabled = !busy;
+			migrateSaves.Enabled = !busy;
 			openFolder.Text = installed ? "Change game files" : "Open game files";
 			if (!busy)
 			{
 				status.Text = installed
-					? "✓  Ready to play"
+					? (SaveLocation.HasAllFilesAccess()
+						? "✓  Ready to play · saves in Download/Celeste"
+						: "Grant All files access so saves live in Download/Celeste")
 					: "Pick the folder of your Celeste PC copy (FNA / \"opengl\" build) or the itch.io .zip.";
 			}
 			driverToggle.Text = "Graphics: " + (Prefs.GetString(PrefDriver, "") == "OpenGL" ? "OpenGL ES" : "Vulkan");
@@ -335,6 +378,60 @@ namespace CelesteAndroid
 				RunInstall(installer => installer.ImportZip(uri));
 			else if (requestCode == RequestSaves)
 				RunJob(installer => $"✓  Imported {installer.ImportSaves(uri)} save file(s)");
+			else if (requestCode == RequestExport)
+				RunJob(_ => $"✓  Exported {SaveLocation.ExportToTree(this, uri)} save file(s)");
+		}
+
+		/// <summary>
+		/// 引导授权「所有文件访问」。已授权时只做静默迁移；
+		/// 未授权时只在首次（或用户点按）跳一次系统设置页，避免每次回到前台都弹。
+		/// </summary>
+		private void EnsureSavePermission()
+		{
+			if (!GameInstaller.IsInstalled(this))
+				return;
+
+			if (SaveLocation.HasAllFilesAccess())
+			{
+				SaveLocation.EnsureReady(this);
+				return;
+			}
+
+			if (Prefs.GetBoolean(PrefAskedSave, false))
+				return;
+
+			if (SaveLocation.RequestAllFilesAccess(this))
+			{
+				Prefs.Edit()!.PutBoolean(PrefAskedSave, true)!.Apply();
+				status.Text = "Grant All files access so saves live in Download/Celeste";
+			}
+		}
+
+		/// <summary>显示当前存档根，外部模式下并尝试用系统文件管理器打开。</summary>
+		private void ShowSaveFolder()
+		{
+			(SaveMode mode, string root) = SaveLocation.Resolve(this);
+			string shown = mode == SaveMode.External
+				? root
+				: SaveLocation.ExternalRoot + "  (mirror)";
+			Toast.MakeText(this, shown, ToastLength.Long)!.Show();
+
+			if (mode != SaveMode.External)
+				return;
+
+			try
+			{
+				var docUri = Uri.Parse(
+					"content://com.android.externalstorage.documents/document/primary%3ADownload%2FCeleste");
+				var intent = new Intent(Intent.ActionView);
+				intent.SetDataAndType(docUri, "vnd.android.document/directory");
+				intent.AddFlags(ActivityFlags.GrantReadUriPermission);
+				StartActivity(intent);
+			}
+			catch (Exception e)
+			{
+				Log.Warn(GameActivity.LogTag, "打开目录失败: " + e.Message);
+			}
 		}
 
 		/// <summary>Importação do jogo: cópia → patch → fundo.</summary>

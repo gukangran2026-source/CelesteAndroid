@@ -29,3 +29,6 @@ obj/
 
 # Arte oficial fornecida pelo usuário (logo etc.)
 /art/
+
+# Everest runtime: baixado pelo CI (release estavel), nao versionar
+/external/everest-lib/

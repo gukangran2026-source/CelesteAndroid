@@ -1,0 +1,211 @@
+name: Build APK
+
+# 构建 Android APK。产物不含游戏数据（Content），装到设备后由用户导入。
+#
+# 为什么在云端构建：.NET Android SDK 的 Javac 步骤依赖 libZipSharpNative-3-3.so，
+# 官方只发布 x86-64 版本，在 ARM 主机上必然 XAJVC7000 失败。云端 runner 是 x64，一次解决。
+#
+# 需要配置的 Secrets（Settings → Secrets and variables → Actions）：
+#   KEYSTORE_BASE64   签名钥匙 base64，必须和之前装过的包同一个钥匙，否则不能覆盖升级
+#   KEYSTORE_PASSWORD 钥匙库口令
+#   KEY_ALIAS         密钥别名
+#   KEY_PASSWORD      密钥口令
+#   FMOD_SDK_URL      FMOD Android SDK 压缩包直链（可选；不配则跳过 FMOD，游戏无声音）
+
+on:
+  workflow_dispatch:
+    inputs:
+      application_id:
+        description: '包名（覆盖升级必须与已装包一致）'
+        required: false
+        default: 'org.celesteandroid.celeste.dev'
+      version_name:
+        description: '版本名'
+        required: false
+        default: '1.6.0'
+      version_code:
+        description: '版本号（每次必须递增）'
+        required: false
+        default: '6'
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'external/**'
+      - 'scripts/**'
+      - '.github/workflows/build-apk.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install Android workload
+        run: |
+          dotnet workload install android
+          dotnet workload list
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: |
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;27.0.12077973" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> $GITHUB_ENV
+
+      # 三个原生库官方没有 Android 预编译包（fnalibs-dailies 只有 Windows/Apple），必须自编。
+      # 编一次约 10 分钟；缓存命中就跳过。
+      - name: Cache native libs
+        id: native-cache
+        uses: actions/cache@v4
+        with:
+          path: natives/android-arm64
+          key: natives-android-arm64-${{ hashFiles('external/SDL/**', 'external/FNA/lib/FNA3D/**', 'external/FNA/lib/FAudio/**') }}
+
+      - name: Build native libs (SDL3, FNA3D, FAudio)
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build cmake
+          mkdir -p natives/android-arm64
+          ABI=arm64-v8a
+          API=26
+          COMMON=(-G Ninja
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+            -DANDROID_ABI=$ABI
+            -DANDROID_PLATFORM=android-$API
+            -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON
+            -DCMAKE_BUILD_TYPE=Release)
+
+          echo "=== SDL3 ==="
+          cmake -S external/SDL -B build/SDL3 "${COMMON[@]}" \
+            -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
+          cmake --build build/SDL3 --parallel
+
+          SDL_SO="$PWD/build/SDL3/libSDL3.so"
+          SDL3_ARGS=(-DSDL3_INCLUDE_DIRS="$PWD/external/SDL/include" -DSDL3_LIBRARIES="$SDL_SO")
+
+          echo "=== FNA3D ==="
+          cmake -S external/FNA/lib/FNA3D -B build/FNA3D "${COMMON[@]}" -DBUILD_SDL3=ON "${SDL3_ARGS[@]}"
+          cmake --build build/FNA3D --parallel
+
+          echo "=== FAudio ==="
+          cmake -S external/FNA/lib/FAudio -B build/FAudio "${COMMON[@]}" -DBUILD_SDL3=ON "${SDL3_ARGS[@]}"
+          cmake --build build/FAudio --parallel
+
+          STRIP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          for so in "$SDL_SO" build/FNA3D/libFNA3D.so build/FAudio/libFAudio.so; do
+            cp "$so" natives/android-arm64/
+            "$STRIP" --strip-unneeded "natives/android-arm64/$(basename "$so")"
+          done
+          ls -la natives/android-arm64/
+
+      # FMOD 是 Firelight 的商业 SDK，仓库里不放。用 secret 给直链，CI 现下。
+      - name: Fetch FMOD SDK
+        if: env.FMOD_SDK_URL != ''
+        env:
+          FMOD_SDK_URL: ${{ secrets.FMOD_SDK_URL }}
+        run: |
+          set -e
+          mkdir -p fmod/libs/android-arm64
+          curl -sSL --retry 3 -m 600 "$FMOD_SDK_URL" -o /tmp/fmod.tar.gz
+          tar xzf /tmp/fmod.tar.gz -C /tmp
+          SRC=$(find /tmp -maxdepth 4 -type d -name 'android' -path '*core*' | head -1)
+          if [ -z "$SRC" ]; then echo "FMOD 包结构不符合预期"; find /tmp -maxdepth 3 -type d | head -20; exit 1; fi
+          cp "$SRC"/lib/arm64-v8a/libfmod.so fmod/libs/android-arm64/ || true
+          cp "$SRC"/lib/fmod.jar fmod/libs/android-arm64/ 2>/dev/null || cp "$SRC"/lib/arm64-v8a/fmod.jar fmod/libs/android-arm64/ || true
+          ls -la fmod/libs/android-arm64/
+
+      # Everest 运行时：从官方 release 拿，71MB，不进仓库。
+      - name: Fetch Everest runtime
+        run: |
+          set -e
+          mkdir -p external/everest-lib
+          curl -sSL --retry 3 -m 600 \
+            https://github.com/EverestAPI/Everest/releases/download/stable-1.6642.0/main.zip \
+            -o /tmp/everest.zip
+          unzip -o -q /tmp/everest.zip 'main/*.dll' -d /tmp/everest-extract
+          cp /tmp/everest-extract/main/*.dll external/everest-lib/
+          echo "Everest dlls: $(ls external/everest-lib/*.dll | wc -l)"
+          du -sh external/everest-lib
+
+      - name: Decode keystore
+        if: env.KEYSTORE_BASE64 != ''
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          set -e
+          mkdir -p /tmp/ks
+          echo "$KEYSTORE_BASE64" | base64 -d > /tmp/ks/release.keystore
+          keytool -list -keystore /tmp/ks/release.keystore \
+            -storepass "${{ secrets.KEYSTORE_PASSWORD }}" | head -5
+
+      - name: Build APK
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          JAVA_HOME: ${{ env.JAVA_HOME }}
+        run: |
+          set -e
+          APP_ID="${{ inputs.application_id }}"
+          APP_ID="${APP_ID:-org.celesteandroid.celeste.dev}"
+          VER_NAME="${{ inputs.version_name }}"
+          VER_NAME="${VER_NAME:-1.6.0}"
+          VER_CODE="${{ inputs.version_code }}"
+          VER_CODE="${VER_CODE:-6}"
+
+          ARGS=(
+            src/Celeste.Android/Celeste.Android.csproj
+            -c Release
+            -p:ApplicationId="$APP_ID"
+            -p:ApplicationDisplayVersion="$VER_NAME"
+            -p:ApplicationVersion="$VER_CODE"
+            -p:EmbedGame=false
+            -p:UseGameArt=false
+          )
+
+          if [ -f /tmp/ks/release.keystore ]; then
+            ARGS+=(
+              -p:AndroidKeyStore=true
+              -p:AndroidSigningKeyStore=/tmp/ks/release.keystore
+              -p:AndroidSigningKeyAlias="${{ secrets.KEY_ALIAS }}"
+              -p:AndroidSigningKeyPass="${{ secrets.KEY_PASSWORD }}"
+              -p:AndroidSigningStorePass="${{ secrets.KEYSTORE_PASSWORD }}"
+            )
+          fi
+
+          dotnet build "${ARGS[@]}" -v minimal
+
+      - name: Collect APK
+        run: |
+          set -e
+          mkdir -p out
+          find src/Celeste.Android/bin -name '*.apk' -o -name '*.aab' | head -20
+          APK=$(find src/Celeste.Android/bin -name '*-Signed.apk' -o -name '*.apk' | head -1)
+          if [ -z "$APK" ]; then echo "没找到 APK"; exit 1; fi
+          cp "$APK" out/Celeste-Android.apk
+          ls -lh out/
+
+      - name: Verify signature
+        run: |
+          APKSIGNER=$(find $ANDROID_HOME/build-tools -name apksigner | head -1)
+          "$APKSIGNER" verify --print-certs out/Celeste-Android.apk 2>&1 | head -8 || true
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Celeste-Android-APK
+          path: out/Celeste-Android.apk
+          retention-days: 30

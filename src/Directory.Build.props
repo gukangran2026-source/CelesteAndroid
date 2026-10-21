@@ -3,6 +3,8 @@
 		<RepoRoot>$([System.IO.Path]::GetFullPath($(MSBuildThisFileDirectory)..\))</RepoRoot>
 		<!-- Cópia do jogo do usuário (build FNA). Nunca vai para o git. -->
 		<CelesteGameDir Condition="'$(CelesteGameDir)' == ''">$(RepoRoot)Celeste\</CelesteGameDir>
+		<!-- Runtime do Everest (Celeste.Mod.mm.dll + dependências), extraído de main.zip. Fora do git. -->
+		<EverestLibDir Condition="'$(EverestLibDir)' == ''">$(RepoRoot)external\everest-lib\</EverestLibDir>
 		<LangVersion>latest</LangVersion>
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>disable</ImplicitUsings>
