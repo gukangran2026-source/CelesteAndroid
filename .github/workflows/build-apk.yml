@@ -127,9 +127,9 @@ jobs:
       # FMOD 是 Firelight 的商业 SDK，仓库里不放。用 secret 给直链，CI 现下。
       # 不配就跳过：csproj 里 fmod 的文件用通配，目录空也不报错。
       - name: Fetch FMOD SDK
-        if: ${{ secrets.FMOD_SDK_URL != '' }}
         env:
           FMOD_SDK_URL: ${{ secrets.FMOD_SDK_URL }}
+        if: env.FMOD_SDK_URL != ''
         run: |
           set -e
           mkdir -p fmod/libs/android-arm64
@@ -155,7 +155,6 @@ jobs:
           du -sh external/everest-lib
 
       - name: Decode keystore
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
