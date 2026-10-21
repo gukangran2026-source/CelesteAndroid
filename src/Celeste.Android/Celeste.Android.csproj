@@ -36,16 +36,19 @@
 		<AndroidKeyStore>true</AndroidKeyStore>
 	</PropertyGroup>
 	<ItemGroup>
-		<!-- Java do SDL3 (SDLActivity etc.), compilado no APK e com bindings C# para subclassificar. -->
-		<AndroidJavaSource Include="$(RepoRoot)external\SDL\android-project\app\src\main\java\org\libsdl\app\*.java" Bind="true" />
-		<TransformFile Include="Transforms\Metadata.xml" />
-		<AndroidNativeLibrary Include="$(RepoRoot)natives\android-arm64\*.so" Abi="arm64-v8a" />
+		<!-- Java do SDL3 (SDLActivity etc.), compilado no APK e com bindings C# para subclassificar.
+		     Caminhos com '/' — no Linux o MSBuild não trata '\' como separador e
+		     'android' viraria wildcard em fmod\libs\android-arm64 (XADJL7028). -->
+		<AndroidJavaSource Include="$(RepoRoot)external/SDL/android-project/app/src/main/java/org/libsdl/app/*.java" Bind="true" />
+		<TransformFile Include="Transforms/Metadata.xml" />
+		<AndroidNativeLibrary Include="$(RepoRoot)natives/android-arm64/*.so" Abi="arm64-v8a" />
 		<!-- FMOD 1.10.14 (mesma versão dos .bank do jogo). Proprietário: fica fora do git. -->
-		<AndroidNativeLibrary Include="$(RepoRoot)fmod\libs\android-arm64\*.so" Abi="arm64-v8a" />
-		<!-- Bind=false: o Javac do SDK só roda em host x64 (libZipSharpNative é x86-64),
-		     e este build roda em ARM. As classes org.fmod.* já vêm compiladas no
-		     classes.dex do APK base; GameActivity chama FMOD por JNI (FmodBridge). -->
-		<AndroidLibrary Include="$(RepoRoot)fmod\libs\android-arm64\fmod.jar" Bind="false" />
+		<AndroidNativeLibrary Include="$(RepoRoot)fmod/libs/android-arm64/*.so" Abi="arm64-v8a"
+			Condition="Exists('$(RepoRoot)fmod/libs/android-arm64')" />
+		<!-- Bind=false: as classes org.fmod.* já vêm no classes.dex do APK base;
+		     GameActivity chama FMOD por JNI (ver FmodBridge). -->
+		<AndroidLibrary Include="$(RepoRoot)fmod/libs/android-arm64/fmod.jar" Bind="false"
+			Condition="Exists('$(RepoRoot)fmod/libs/android-arm64/fmod.jar')" />
 	</ItemGroup>
 	<ItemGroup Condition="'$(HasGameIcon)' == 'true'">
 		<AndroidResource Include="$(GameArtDir)icon\res\**\*" Link="Resources\%(RecursiveDir)%(Filename)%(Extension)" />
