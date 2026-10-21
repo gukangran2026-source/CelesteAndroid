@@ -49,8 +49,10 @@ namespace CelesteAndroid
 					return;
 				}
 
+				// Context 本身是 Java 对象，直接把它的 handle 传进去；不转移所有权。
 				JNIEnv.CallStaticVoidMethod(classPtr, methodId,
-					new JValue(new Java.Lang.Object(context.Handle)));
+					new JValue(new Java.Lang.Object(context.Handle,
+						JniHandleOwnership.DoNotTransfer)));
 				Android.Util.Log.Info(Tag, "FMOD.Init 已调用");
 			}
 			catch (Exception e)
