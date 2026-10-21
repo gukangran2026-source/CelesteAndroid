@@ -5,12 +5,12 @@ name: Build APK
 # 为什么在云端构建：.NET Android SDK 的 Javac 步骤依赖 libZipSharpNative-3-3.so，
 # 官方只发布 x86-64 版本，在 ARM 主机上必然 XAJVC7000 失败。云端 runner 是 x64，一次解决。
 #
-# 需要配置的 Secrets（Settings → Secrets and variables → Actions）：
-#   KEYSTORE_BASE64   签名钥匙 base64，必须和之前装过的包同一个钥匙，否则不能覆盖升级
+# 可选 Secrets（Settings → Secrets and variables → Actions）：
+#   KEYSTORE_BASE64   签名钥匙 base64。必须和已装包同一把钥匙，否则无法覆盖升级
 #   KEYSTORE_PASSWORD 钥匙库口令
 #   KEY_ALIAS         密钥别名
 #   KEY_PASSWORD      密钥口令
-#   FMOD_SDK_URL      FMOD Android SDK 压缩包直链（可选；不配则跳过 FMOD，游戏无声音）
+#   FMOD_SDK_URL      FMOD Android SDK 压缩包直链（不配则跳过 FMOD，游戏无声音）
 
 on:
   workflow_dispatch:
@@ -31,7 +31,6 @@ on:
     branches: [ main ]
     paths:
       - 'src/**'
-      - 'external/**'
       - 'scripts/**'
       - '.github/workflows/build-apk.yml'
 
@@ -57,13 +56,25 @@ jobs:
           dotnet workload install android
           dotnet workload list
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install NDK
+      # ubuntu-24.04 runner 预装了 Android SDK（ANDROID_HOME 已设）。
+      # 不用 android-actions/setup-android：它在当前镜像上找 'tools' 包会失败。
+      - name: Android SDK 与 NDK
         run: |
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;27.0.12077973" > /dev/null
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> $GITHUB_ENV
+          set -e
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME" || true
+          SDKMANAGER=$(find "$ANDROID_HOME" -name sdkmanager -type f | head -1)
+          echo "sdkmanager: $SDKMANAGER"
+          # NDK 只在编译原生库时需要；缓存命中时这步也很快。
+          echo "y" | "$SDKMANAGER" --install "ndk;27.0.12077973" > /dev/null || \
+            echo "NDK 安装被跳过（可能已存在或源不可用）"
+          NDK_DIR="$ANDROID_HOME/ndk/27.0.12077973"
+          if [ -d "$NDK_DIR" ]; then
+            echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+            echo "NDK ok: $NDK_DIR"
+          else
+            echo "没有 NDK，原生库缓存必须命中"
+          fi
 
       # 三个原生库官方没有 Android 预编译包（fnalibs-dailies 只有 Windows/Apple），必须自编。
       # 编一次约 10 分钟；缓存命中就跳过。
@@ -114,8 +125,9 @@ jobs:
           ls -la natives/android-arm64/
 
       # FMOD 是 Firelight 的商业 SDK，仓库里不放。用 secret 给直链，CI 现下。
+      # 不配就跳过：csproj 里 fmod 的文件用通配，目录空也不报错。
       - name: Fetch FMOD SDK
-        if: env.FMOD_SDK_URL != ''
+        if: ${{ secrets.FMOD_SDK_URL != '' }}
         env:
           FMOD_SDK_URL: ${{ secrets.FMOD_SDK_URL }}
         run: |
@@ -123,10 +135,10 @@ jobs:
           mkdir -p fmod/libs/android-arm64
           curl -sSL --retry 3 -m 600 "$FMOD_SDK_URL" -o /tmp/fmod.tar.gz
           tar xzf /tmp/fmod.tar.gz -C /tmp
-          SRC=$(find /tmp -maxdepth 4 -type d -name 'android' -path '*core*' | head -1)
+          SRC=$(find /tmp -maxdepth 5 -type d -path '*core/lib' 2>/dev/null | head -1)
           if [ -z "$SRC" ]; then echo "FMOD 包结构不符合预期"; find /tmp -maxdepth 3 -type d | head -20; exit 1; fi
-          cp "$SRC"/lib/arm64-v8a/libfmod.so fmod/libs/android-arm64/ || true
-          cp "$SRC"/lib/fmod.jar fmod/libs/android-arm64/ 2>/dev/null || cp "$SRC"/lib/arm64-v8a/fmod.jar fmod/libs/android-arm64/ || true
+          cp "$SRC"/arm64-v8a/libfmod.so fmod/libs/android-arm64/ || true
+          cp "$SRC"/fmod.jar fmod/libs/android-arm64/ || true
           ls -la fmod/libs/android-arm64/
 
       # Everest 运行时：从官方 release 拿，71MB，不进仓库。
@@ -143,28 +155,30 @@ jobs:
           du -sh external/everest-lib
 
       - name: Decode keystore
-        if: env.KEYSTORE_BASE64 != ''
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
           set -e
           mkdir -p /tmp/ks
           echo "$KEYSTORE_BASE64" | base64 -d > /tmp/ks/release.keystore
-          keytool -list -keystore /tmp/ks/release.keystore \
-            -storepass "${{ secrets.KEYSTORE_PASSWORD }}" | head -5
+          keytool -list -keystore /tmp/ks/release.keystore -storepass "$KS_PASS" | head -8
 
       - name: Build APK
         env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
-          JAVA_HOME: ${{ env.JAVA_HOME }}
+          KS_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KS_KEY_PASS: ${{ secrets.KEY_PASSWORD }}
+          KS_STORE_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          IN_APP_ID: ${{ inputs.application_id }}
+          IN_VER_NAME: ${{ inputs.version_name }}
+          IN_VER_CODE: ${{ inputs.version_code }}
         run: |
           set -e
-          APP_ID="${{ inputs.application_id }}"
-          APP_ID="${APP_ID:-org.celesteandroid.celeste.dev}"
-          VER_NAME="${{ inputs.version_name }}"
-          VER_NAME="${VER_NAME:-1.6.0}"
-          VER_CODE="${{ inputs.version_code }}"
-          VER_CODE="${VER_CODE:-6}"
+          APP_ID="${IN_APP_ID:-org.celesteandroid.celeste.dev}"
+          VER_NAME="${IN_VER_NAME:-1.6.0}"
+          VER_CODE="${IN_VER_CODE:-6}"
+          echo "包名=$APP_ID 版本=$VER_NAME($VER_CODE)"
 
           ARGS=(
             src/Celeste.Android/Celeste.Android.csproj
@@ -180,9 +194,9 @@ jobs:
             ARGS+=(
               -p:AndroidKeyStore=true
               -p:AndroidSigningKeyStore=/tmp/ks/release.keystore
-              -p:AndroidSigningKeyAlias="${{ secrets.KEY_ALIAS }}"
-              -p:AndroidSigningKeyPass="${{ secrets.KEY_PASSWORD }}"
-              -p:AndroidSigningStorePass="${{ secrets.KEYSTORE_PASSWORD }}"
+              -p:AndroidSigningKeyAlias="$KS_ALIAS"
+              -p:AndroidSigningKeyPass="$KS_KEY_PASS"
+              -p:AndroidSigningStorePass="$KS_STORE_PASS"
             )
           fi
 
@@ -192,15 +206,15 @@ jobs:
         run: |
           set -e
           mkdir -p out
-          find src/Celeste.Android/bin -name '*.apk' -o -name '*.aab' | head -20
-          APK=$(find src/Celeste.Android/bin -name '*-Signed.apk' -o -name '*.apk' | head -1)
+          find src/Celeste.Android/bin -name '*.apk' | head -20
+          APK=$(find src/Celeste.Android/bin -name '*.apk' | head -1)
           if [ -z "$APK" ]; then echo "没找到 APK"; exit 1; fi
           cp "$APK" out/Celeste-Android.apk
           ls -lh out/
 
       - name: Verify signature
         run: |
-          APKSIGNER=$(find $ANDROID_HOME/build-tools -name apksigner | head -1)
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | head -1)
           "$APKSIGNER" verify --print-certs out/Celeste-Android.apk 2>&1 | head -8 || true
 
       - name: Upload APK
