@@ -46,6 +46,19 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      # Celeste.exe 是编译 Celeste.Android.Patches 所必需的：patch_Engine 继承
+      # Monocle.Engine，没有原版程序集就 CS0246。它是版权文件，不进 git，
+      # 放在本仓库 release "build-deps" 里，CI 用 token 取。
+      - name: Fetch Celeste.exe (build-only)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          mkdir -p Celeste
+          gh release download build-deps --pattern Celeste.exe \
+            --repo "${{ github.repository }}" --dir Celeste --clobber
+          ls -la Celeste/Celeste.exe
+
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
         with:
