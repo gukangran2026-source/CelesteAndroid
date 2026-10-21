@@ -83,14 +83,20 @@
 	</ItemGroup>
 
 	<!-- O patch roda no aparelho: o MonoMod precisa do módulo de patches e das DLLs que o
-	     Celeste.dll gerado referencia (FNA, Steamworks.NET) como arquivos, não do assembly store. -->
+	     Celeste.dll gerado referencia (FNA, Steamworks.NET) como arquivos, não do assembly store.
+	     Cada item declara seu próprio LogicalName com nome fixo: usar %(Filename) em
+	     metadados de item batching fazia todos os assets apontarem para o mesmo arquivo. -->
 	<Target Name="_AddPatcherAssets" BeforeTargets="_ComputeAndroidAssetsPaths">
 		<ItemGroup>
-			<AndroidAsset Include="@(CelestePatchModule)" LogicalName="patcher/%(Filename)%(Extension)" />
-			<AndroidAsset Include="@(ReferencePath)" Condition="'%(Filename)' == 'FNA' or '%(Filename)' == 'Steamworks.NET' or '%(Filename)' == 'MonoMod.Patcher'"
-				LogicalName="patcher/%(Filename)%(Extension)" />
+			<AndroidAsset Include="@(CelestePatchModule)" LogicalName="patcher/Celeste.Android.mm.dll" />
+			<AndroidAsset Include="@(ReferencePath)" Condition="'%(Filename)' == 'FNA'"
+				LogicalName="patcher/FNA.dll" />
+			<AndroidAsset Include="@(ReferencePath)" Condition="'%(Filename)' == 'Steamworks.NET'"
+				LogicalName="patcher/Steamworks.NET.dll" />
+			<AndroidAsset Include="@(ReferencePath)" Condition="'%(Filename)' == 'MonoMod.Patcher'"
+				LogicalName="patcher/MonoMod.Patcher.dll" />
 			<!-- Runtime do Everest: o Celeste.dll mesclado referencia todos estes em tempo de execução. -->
-			<AndroidAsset Include="$(EverestLibDir)**\*.dll" LogicalName="patcher/%(Filename)%(Extension)" />
+			<AndroidAsset Include="$(EverestLibDir)*.dll" LogicalName="patcher/%(Filename)%(Extension)" />
 		</ItemGroup>
 	</Target>
 </Project>
